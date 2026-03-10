@@ -1,6 +1,8 @@
 import cv2
 import os
 import time
+import subprocess
+import imageio_ffmpeg
 from collections import deque
 from yolo_detector import detect_and_track_objects_in_frame
 from color_analyzer import analyze_object_attributes
@@ -53,12 +55,17 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
         fps = 30.0 
         
     # Setup Video Writer for Annotated Output
-    output_filename = f"annotated_{os.path.basename(video_path)}"
+    filename_without_ext = os.path.splitext(os.path.basename(video_path))[0]
+    final_output_filename = f"annotated_{filename_without_ext}.mp4"
+    temp_output_filename = f"temp_{filename_without_ext}.mp4"
+    
     # Save it in the same directory as the upload for now
-    output_path = os.path.join(os.path.dirname(video_path), output_filename)
-    # H264 codec for web compatibility via mp4v or avc1
+    final_output_path = os.path.join(os.path.dirname(video_path), final_output_filename)
+    temp_output_path = os.path.join(os.path.dirname(video_path), temp_output_filename)
+    
+    # Generate a raw reliable mp4v first (Windows native OpenCV won't complain)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
-    out_video = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    out_video = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
         
     if progress_callback:
         progress_callback(10, "Loading Video & Initializing Models...") 
@@ -76,6 +83,7 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
     
     # Keep track of IDs we have already run through CLIP to save immense processing time
     clip_processed_ids = {}
+    confirmed_match_ids = set() # To store IDs that matched the complex query
     
     print(f"Starting video processing: {video_path} (FPS: {fps}, Total Frames: {total_frames})")
     start_time = time.time()
@@ -117,7 +125,7 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
                     cv2.rectangle(annotated_frame, (0, 0), (width, height), (0, 0, 255), 10)
                     cv2.putText(annotated_frame, "VIOLENCE DETECTED", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)
 
-        if frame_count % frame_skip == 0 and target_object:
+        if target_object:
             timestamp_sec = frame_count / fps
             
             # 1. Run Object Det + Tracking + Pose
@@ -225,7 +233,13 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
                         if anomaly_lower not in action_label.lower():
                             match = False
                             
-                    if match:
+                    if match and track_id != -1:
+                        confirmed_match_ids.add(track_id)
+                        
+                    is_confirmed = track_id in confirmed_match_ids
+                            
+                    # Only append to JSON results sparsely to not bloat the UI, but we matched the logic above
+                    if match and (frame_count % frame_skip == 0):
                         results_list.append({
                             "timestamp": round(timestamp_sec, 2),
                             "frame_index": frame_count,
@@ -239,7 +253,8 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
                             "track_id": track_id
                         })
                         
-                        # Annotate the Match Frame
+                    # Annotate the Match Frame explicitly for ANY confirmed match
+                    if is_confirmed:
                         bx1, by1, bx2, by2 = det["bbox"]
                         color_box = (0, 255, 0) # Green for match
                         cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2), color_box, 3)
@@ -265,8 +280,32 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
         
     cap.release()
     out_video.release()
+    
+    # --- FFmpeg H264 Web Conversion ---
+    if progress_callback:
+        progress_callback(95, "Encoding Video for Web Playback...")
+        
+    try:
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        subprocess.run([
+            ffmpeg_exe, 
+            '-y', 
+            '-i', temp_output_path, 
+            '-vcodec', 'libx264', 
+            final_output_path
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        
+        # Clean up the unplayable temp file
+        if os.path.exists(temp_output_path):
+            os.remove(temp_output_path)
+    except Exception as e:
+        print(f"Failed to re-encode video with FFmpeg: {e}")
+        # Fallback to the temp raw video if it fails
+        if os.path.exists(temp_output_path) and not os.path.exists(final_output_path):
+             os.rename(temp_output_path, final_output_path)
+             
     process_time = time.time() - start_time
-    print(f"Video processing finished in {process_time:.2f} seconds.")
+    print(f"Video processing & encoding finished in {process_time:.2f} seconds.")
     
     if progress_callback:
         progress_callback(98, "Formatting Final JSON Payload...") 
@@ -291,7 +330,7 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
         "processing_time_seconds": round(process_time, 2),
         "matches_found": len(unique_matches),
         "total_unfiltered_frames": len(results_list),
-        "annotated_video_path": output_filename,
+        "annotated_video_path": final_output_filename,
         "results": unique_matches
     }
 

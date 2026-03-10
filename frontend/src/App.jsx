@@ -25,12 +25,17 @@ function App() {
   const [activeBox, setActiveBox] = useState(null)
 
   // Auth & View State
-  const [view, setView] = useState('home') // 'home', 'results'
+  const [view, setView] = useState('home') // 'home', 'results', 'history'
   const [session, setSession] = useState(null)
   const [authEmail, setAuthEmail] = useState('')
   const [authPassword, setAuthPassword] = useState('')
-  const [authLoading, setAuthLoading] = useState(false)
+  const [isLogin, setIsLogin] = useState(true)
   const [authError, setAuthError] = useState(null)
+
+  // History State
+  const [history, setHistory] = useState([])
+  const [loadingHistory, setLoadingHistory] = useState(false)
+  const [authLoading, setAuthLoading] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -213,6 +218,30 @@ function App() {
       }
     } catch (err) {
       console.error("Database save exception:", err);
+    }
+  }
+
+  useEffect(() => {
+    if (view === 'history' && session?.user?.id) {
+      fetchHistory()
+    }
+  }, [view, session])
+
+  const fetchHistory = async () => {
+    setLoadingHistory(true)
+    try {
+      const { data, error } = await supabase
+        .from('reports')
+        .select('*')
+        .eq('user_id', session.user.id)
+        .order('created_at', { ascending: false })
+      
+      if (error) throw error
+      setHistory(data || [])
+    } catch (err) {
+      console.error("Error fetching history:", err)
+    } finally {
+      setLoadingHistory(false)
     }
   }
 
@@ -462,6 +491,74 @@ function App() {
               </div>
             )}
           </>
+        )}
+
+        {session && view === 'history' && (
+          <div style={{ width: '100%', maxWidth: '1000px', margin: '0 auto' }}>
+            <div className="results-header-bar">
+              <div>
+                <button className="back-btn" onClick={() => setView('home')}>
+                  <ArrowLeft size={18} /> Back to Dashboard
+                </button>
+                <h1 style={{ fontSize: '2rem', fontWeight: 500, marginBottom: '0.25rem' }}>Past Reports</h1>
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                  Your previously analyzed CCTV footage and detections
+                </p>
+              </div>
+            </div>
+
+            <div className="glass-panel" style={{ minHeight: '400px' }}>
+              {loadingHistory ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '200px' }}>
+                  <div className="loader"></div>
+                  <p style={{ marginTop: '1rem', color: 'var(--text-muted)' }}>Loading history...</p>
+                </div>
+              ) : history.length > 0 ? (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1.5rem' }}>
+                  {history.map(report => (
+                    <div key={report.id} style={{ background: 'var(--bg-darker)', border: '1px solid var(--border-color)', borderRadius: '12px', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                        <div>
+                          <h3 style={{ fontSize: '1.1rem', fontWeight: 600, wordBreak: 'break-all' }}>{report.video_name}</h3>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                            {new Date(report.created_at).toLocaleString()}
+                          </span>
+                        </div>
+                        <div style={{ background: 'rgba(157, 78, 221, 0.1)', padding: '0.5rem', borderRadius: '8px' }}>
+                          <History size={20} color="#9d4edd" />
+                        </div>
+                      </div>
+                      
+                      <div style={{ background: 'rgba(255,255,255,0.03)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                        <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Query Prompt</div>
+                        <div style={{ fontSize: '0.95rem', fontWeight: 500 }}>"{report.query}"</div>
+                      </div>
+                      
+                      <div>
+                        <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>Detections Found</div>
+                        <div style={{ fontSize: '0.9rem', color: 'var(--primary)' }}>
+                          {report.results || "No unusual activity detected"}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '300px', textAlign: 'center' }}>
+                  <div style={{ background: 'rgba(255,255,255,0.05)', padding: '1.5rem', borderRadius: '50%', marginBottom: '1.5rem' }}>
+                    <History size={48} color="var(--text-muted)" opacity={0.5} />
+                  </div>
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: 500, marginBottom: '0.5rem' }}>No History Found</h3>
+                  <p style={{ color: 'var(--text-muted)', maxWidth: '400px' }}>
+                    It looks like you haven't run any analyses yet. Head over to the dashboard to upload your first video.
+                  </p>
+                  <button className="btn-primary" onClick={() => setView('home')} style={{ marginTop: '1.5rem' }}>
+                    Go to Dashboard
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         )}
 
         {session && view === 'results' && results && (

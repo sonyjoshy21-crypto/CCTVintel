@@ -22,7 +22,7 @@ dist/
 error.log
 
 # Data, models, uploads (keep large files out of git)
-models/
+
 uploads/
 *.mp4
 *.mov
@@ -31,7 +31,6 @@ uploads/
 *.pt
 *.onnx
 *.h5
-*.keras
 
 # IDEs / editors
 .vscode/
