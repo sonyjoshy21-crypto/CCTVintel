@@ -1,0 +1,56 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyc
+*.pyd
+
+# Virtual env
+venv/
+.venv/
+env/
+.env
+.env.*
+
+# Python build
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+error.log
+
+# Data, models, uploads (keep large files out of git)
+models/
+uploads/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.pt
+*.onnx
+*.h5
+*.keras
+
+# IDEs / editors
+.vscode/
+.idea/
+*.suo
+*.user
+*.swp
+*.DS_Store
+
+# Node
+node_modules/
+frontend/dist/
+frontend/node_modules/
+frontend/.env
+
+# Database
+*.sqlite3
+*.db
+
+# Other
+*.bak
+*.tmp

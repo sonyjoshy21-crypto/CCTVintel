@@ -1,0 +1,221 @@
+{
+  "matches_found": 13,
+  "parsed_query": {
+    "anomaly": "fighting",
+    "color": null,
+    "object": "person"
+  },
+  "processing_time_seconds": 17.6,
+  "results": [
+    {
+      "action": "unknown",
+      "bbox": [
+        282,
+        240,
+        415,
+        714
+      ],
+      "color": "unknown",
+      "confidence": 0.87,
+      "frame_index": 0,
+      "object": "person",
+      "speed": 0,
+      "timestamp": 0,
+      "track_id": 0
+    },
+    {
+      "action": "unknown",
+      "bbox": [
+        666,
+        215,
+        747,
+        471
+      ],
+      "color": "unknown",
+      "confidence": 0.78,
+      "frame_index": 0,
+      "object": "person",
+      "speed": 0,
+      "timestamp": 0,
+      "track_id": 1
+    },
+    {
+      "action": "unknown",
+      "bbox": [
+        579,
+        251,
+        688,
+        446
+      ],
+      "color": "unknown",
+      "confidence": 0.7,
+      "frame_index": 0,
+      "object": "person",
+      "speed": 0,
+      "timestamp": 0,
+      "track_id": 2
+    },
+    {
+      "action": "Violence Detected",
+      "bbox": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "color": "unknown",
+      "confidence": 99.9903793334961,
+      "frame_index": 16,
+      "object": "violence",
+      "speed": 0,
+      "timestamp": 0.53,
+      "track_id": -100
+    },
+    {
+      "action": "walking",
+      "bbox": [
+        529,
+        196,
+        568,
+        237
+      ],
+      "color": "unknown",
+      "confidence": 0.58,
+      "frame_index": 25,
+      "object": "person",
+      "speed": 3.66742416417845,
+      "timestamp": 0.83,
+      "track_id": 3
+    },
+    {
+      "action": "Violence Detected",
+      "bbox": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "color": "unknown",
+      "confidence": 99.91499328613281,
+      "frame_index": 32,
+      "object": "violence",
+      "speed": 0,
+      "timestamp": 1.07,
+      "track_id": -101
+    },
+    {
+      "action": "Violence Detected",
+      "bbox": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "color": "unknown",
+      "confidence": 99.98338317871094,
+      "frame_index": 48,
+      "object": "violence",
+      "speed": 0,
+      "timestamp": 1.6,
+      "track_id": -102
+    },
+    {
+      "action": "Violence Detected",
+      "bbox": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "color": "unknown",
+      "confidence": 99.92974853515625,
+      "frame_index": 64,
+      "object": "violence",
+      "speed": 0,
+      "timestamp": 2.13,
+      "track_id": -103
+    },
+    {
+      "action": "walking",
+      "bbox": [
+        710,
+        203,
+        916,
+        587
+      ],
+      "color": "unknown",
+      "confidence": 0.47,
+      "frame_index": 70,
+      "object": "person",
+      "speed": 4.161730409336963,
+      "timestamp": 2.33,
+      "track_id": 5
+    },
+    {
+      "action": "Violence Detected",
+      "bbox": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "color": "unknown",
+      "confidence": 99.42011260986328,
+      "frame_index": 80,
+      "object": "violence",
+      "speed": 0,
+      "timestamp": 2.67,
+      "track_id": -104
+    },
+    {
+      "action": "Violence Detected",
+      "bbox": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "color": "unknown",
+      "confidence": 99.68708038330078,
+      "frame_index": 96,
+      "object": "violence",
+      "speed": 0,
+      "timestamp": 3.2,
+      "track_id": -105
+    },
+    {
+      "action": "Violence Detected",
+      "bbox": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "color": "unknown",
+      "confidence": 97.4458236694336,
+      "frame_index": 112,
+      "object": "violence",
+      "speed": 0,
+      "timestamp": 3.73,
+      "track_id": -106
+    },
+    {
+      "action": "Violence Detected",
+      "bbox": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "color": "unknown",
+      "confidence": 99.32779693603516,
+      "frame_index": 128,
+      "object": "violence",
+      "speed": 0,
+      "timestamp": 4.27,
+      "track_id": -107
+    }
+  ],
+  "status": "success",
+  "total_unfiltered_frames": 65
+}
