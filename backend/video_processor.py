@@ -128,8 +128,14 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
         if target_object:
             timestamp_sec = frame_count / fps
             
-            # 1. Run Object Det + Tracking + Pose
-            raw_detections = detect_and_track_objects_in_frame(frame, conf_threshold)
+            # 1. Run Object Det + Tracking + (Optional) Pose
+            # Only trigger heavy Pose model if we need to evaluate a physical action
+            requires_pose_eval = bool(target_anomaly and not check_violence) 
+            raw_detections = detect_and_track_objects_in_frame(
+                frame, 
+                conf_threshold=conf_threshold, 
+                needs_pose=requires_pose_eval
+            )
             
             valid_detections = []
             for det in raw_detections:

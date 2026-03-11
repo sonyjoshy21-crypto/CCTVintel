@@ -3,76 +3,99 @@ import cv2
 import os
 
 # Lazy load model variables
-_model = None
-_model_load_attempted = False
+_obj_model = None
+_pose_model = None
+_models_load_attempted = False
 
-def get_yolo_model():
-    global _model, _model_load_attempted
-    if _model is None and not _model_load_attempted:
-        # Load the Pose model which can do BOTH detection (person) AND pose estimation
-        model_path = "yolov8s-pose.pt"
-        print(f"Loading YOLOv8 Pose model from {model_path}...")
-        _model_load_attempted = True
-        try:
-            _model = YOLO(model_path)
-            print("YOLOv8 Pose model loaded successfully.")
-        except Exception as e:
-            print(f"Error loading YOLOv8 Pose model: {e}")
-            _model = None
-    return _model
-
-def detect_and_track_objects_in_frame(frame, conf_threshold=0.5):
-    """
-    Runs YOLOv8 object tracking and pose estimation on a single frame.
-    
-    Returns:
-        List of dictionaries containing detected objects and their poses:
-        [
-            {
-                "id": 1,
-                "class": "person", 
-                "confidence": 0.85,
-                "bbox": [x1, y1, x2, y2],
-                "keypoints": [[x, y, conf], ...] # 17 keypoints if person
-            },
-            ...
-        ]
-    """
-    model = get_yolo_model()
-    if model is None:
-        raise RuntimeError("YOLO model is not initialized.")
+def get_yolo_models():
+    global _obj_model, _pose_model, _models_load_attempted
+    if not _models_load_attempted:
+        _models_load_attempted = True
         
-    # Run tracking inference to maintain persistent IDs across frames
-    results = model.track(frame, conf=conf_threshold, persist=True, verbose=False)
+        # Load standard object detection model (80 COCO classes: cars, dogs, etc)
+        obj_model_path = "yolov8n.pt" # Or 'yolov8s.pt' if you prefer higher accuracy
+        try:
+            print(f"Loading YOLOv8 Object model from {obj_model_path}...")
+            _obj_model = YOLO(obj_model_path)
+        except Exception as e:
+            print(f"Error loading {obj_model_path}: {e}")
+            
+        # Load the Pose model strictly for human keypoints
+        pose_model_path = "yolov8s-pose.pt"
+        try:
+            print(f"Loading YOLOv8 Pose model from {pose_model_path}...")
+            _pose_model = YOLO(pose_model_path)
+        except Exception as e:
+            print(f"Error loading {pose_model_path}: {e}")
+            
+    return _obj_model, _pose_model
+
+def detect_and_track_objects_in_frame(frame, conf_threshold=0.3, needs_pose=False):
+    """
+    Runs YOLOv8 object tracking on a single frame.
+    If needs_pose is True, it runs a secondary pass to extract human pose keypoints.
+    """
+    obj_model, pose_model = get_yolo_models()
+    if obj_model is None:
+        raise RuntimeError("YOLO object model is not initialized.")
+        
+    # 1. Run standard object tracking for all classes
+    # We use persist=True to let YOLO (ByteTrack) keep track IDs internally
+    results = obj_model.track(frame, conf=conf_threshold, persist=True, verbose=False)
     
     detected_objects = []
+    people_bboxes = []
     
     for r in results:
         boxes = r.boxes
-        keypoints = r.keypoints if hasattr(r, 'keypoints') and r.keypoints is not None else None
         
         for i, box in enumerate(boxes):
             b = box.xyxy[0].tolist() 
             c = int(box.cls)
-            class_name = model.names[c]
+            class_name = obj_model.names[c]
             conf = float(box.conf)
             
             # Extract tracking ID if it exists
             track_id = int(box.id[0]) if box.id is not None else -1
+            bbox_int = [int(x) for x in b]
             
             obj_data = {
                 "id": track_id,
                 "class": class_name,
                 "confidence": round(conf, 2),
-                "bbox": [int(x) for x in b],
+                "bbox": bbox_int,
                 "keypoints": None
             }
             
-            # Extract pose keypoints for humans
-            if keypoints is not None and class_name == "person":
-                kp_data = keypoints.data[i].tolist() # List of [x, y, conf] for 17 joints
-                obj_data["keypoints"] = kp_data
+            if class_name == "person":
+                people_bboxes.append((obj_data, b))
                 
             detected_objects.append(obj_data)
             
+    # 2. If pose is needed for the query, run the pose model specifically
+    if needs_pose and pose_model is not None and people_bboxes:
+        # Running the pose model across the full frame to get keypoints
+        # (It's often faster/cleaner than cropping every person, though dual-inference is heavy)
+        pose_results = pose_model(frame, conf=0.4, verbose=False)
+        for pr in pose_results:
+            p_boxes = pr.boxes
+            p_kps = pr.keypoints
+            
+            if p_kps is not None:
+                for idx, p_box in enumerate(p_boxes):
+                    pb = p_box.xyxy[0].tolist()
+                    
+                    # Match pose bounding boxes (pb) to object tracking boxes (b) using IoU or simple box center proximity
+                    px_center = (pb[0] + pb[2]) / 2
+                    py_center = (pb[1] + pb[3]) / 2
+                    
+                    for person_dict, orig_b in people_bboxes:
+                        if person_dict["keypoints"] is not None:
+                            continue # Already mapped
+                            
+                        # If the pose bounding box center is inside the tracking bounding box
+                        if orig_b[0] <= px_center <= orig_b[2] and orig_b[1] <= py_center <= orig_b[3]:
+                            person_dict["keypoints"] = p_kps.data[idx].tolist()
+                            break
+                            
     return detected_objects
