@@ -5,7 +5,7 @@ import subprocess
 import imageio_ffmpeg
 from collections import deque
 from yolo_detector import detect_and_track_objects_in_frame
-from color_analyzer import analyze_object_attributes
+from color_analyzer import analyze_object_attributes, get_mapped_color
 from clip_classifier import classify_attributes
 from nlp_parser import parse_prompt
 from action_tracker import SimpleTracker
@@ -26,10 +26,12 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
     parsed_query = parse_prompt(query)
     target_object = parsed_query.get("object")
     target_color = parsed_query.get("color")
+    if target_color:
+        target_color = get_mapped_color(target_color)
     target_anomaly = parsed_query.get("anomaly")
     target_attributes = parsed_query.get("attributes")
     
-    print(f"Parsed Query JSON: {parsed_query}")
+    print(f"Parsed Query JSON: {parsed_query} (Target Color: {target_color})")
     
     check_violence = False
     violence_model = None
@@ -63,6 +65,23 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
     final_output_path = os.path.join(os.path.dirname(video_path), final_output_filename)
     temp_output_path = os.path.join(os.path.dirname(video_path), temp_output_filename)
     
+    # EXTRACTION: Get original aspect ratio to preserve proportions
+    aspect_ratio_str = None
+    try:
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        # Run ffmpeg -i to get info
+        cmd = [ffmpeg_exe, '-i', video_path]
+        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        _, stderr = proc.communicate()
+        # Look for DAR in the output (e.g., [SAR 1:1 DAR 16:9])
+        import re
+        dar_match = re.search(r'DAR\s+([0-9]+:[0-9]+)', stderr)
+        if dar_match:
+            aspect_ratio_str = dar_match.group(1)
+            print(f"Detected Original Aspect Ratio (DAR): {aspect_ratio_str}")
+    except Exception as e:
+        print(f"Warning: Could not detect aspect ratio: {e}")
+
     # Generate a raw reliable mp4v first (Windows native OpenCV won't complain)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
     out_video = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
@@ -166,52 +185,104 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
             for det, sp_det in zip(valid_detections, speed_tracked):
                 if det["class"] == target_object:
                     match = True
-                    color = "unknown"
-                    action_label = sp_det.get("action", "unknown")
-                    matched_attributes = None
-                    
                     track_id = det["id"]
+                    action_label = sp_det.get("action", "unknown")
+                    distribution = {} 
+                    color = "unknown"
+                    matched_attributes = "none"
                     
                     # Handle Complex Attributes via CLIP
+                    attribute_confirmed = False
                     if target_attributes:
                         if track_id != -1 and track_id in clip_processed_ids:
-                            # Re-use cached CLIP result for this tracked object to save massive time
                             matched_attributes = clip_processed_ids[track_id]
+                            if matched_attributes == target_attributes:
+                                attribute_confirmed = True
                         else:
-                            # Run CLIP inference on the cropped bounding box
                             bx1, by1, bx2, by2 = det["bbox"]
-                            # Add slight padding
                             pad = 10
-                            crop_y1 = max(0, by1 - pad)
-                            crop_y2 = min(height, by2 + pad)
-                            crop_x1 = max(0, bx1 - pad)
-                            crop_x2 = min(width, bx2 + pad)
+                            crop_y1, crop_y2 = max(0, by1 - pad), min(height, by2 + pad)
+                            crop_x1, crop_x2 = max(0, bx1 - pad), min(width, bx2 + pad)
                             
                             crop_img = frame[crop_y1:crop_y2, crop_x1:crop_x2]
                             if crop_img.size > 0:
-                                # Provide options: Does it have the attribute, or does it not?
-                                prompts = [f"a person with {target_attributes}", f"a person without {target_attributes}"]
-                                # Convert BGR to RGB for CLIP
+                                # High-quality prompt pair: Re-balanced for better matching
+                                prompts = [f"a person wearing {target_attributes}", "a person in different clothes"]
                                 crop_rgb = cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB)
-                                best_match = classify_attributes(crop_rgb, prompts)
+                                best_match, clip_conf = classify_attributes(crop_rgb, prompts)
                                 
-                                if best_match == prompts[0]:
+                                # Debug log for fine-tuning
+                                # if clip_conf > 0.4: # Only log if there's some signal
+                                #    print(f"CLIP Trace [ID {track_id}]: Target='{target_attributes}' | Winner='{best_match}' | Conf={clip_conf:.2f}")
+                                
+                                # STRICKER BALANCED THRESHOLD (0.65) for higher accuracy
+                                if best_match == prompts[0] and clip_conf >= 0.65:
                                     matched_attributes = target_attributes
+                                    attribute_confirmed = True
                                 else:
                                     matched_attributes = "no match"
                                     
                                 if track_id != -1:
                                     clip_processed_ids[track_id] = matched_attributes
-                        
-                        if matched_attributes != target_attributes:
-                            match = False
 
-                    # Check basic color
+                    # Check basic color 
+                    # MANDATORY VERIFICATION LOGIC: 
+                    # If the user specified a color, we ALWAYS run the Torso Analyzer as a second opinion.
                     if target_color and match:
-                        attrs = analyze_object_attributes(frame, det["bbox"])
-                        color = attrs.get("color", "unknown")
-                        if color != target_color:
-                            match = False
+                        attrs = analyze_object_attributes(frame, det["bbox"], object_type=det["class"])
+                        detected_color = attrs.get("color", "unknown")
+                        distribution = attrs.get("distribution", {})
+                        color = detected_color
+                        
+                        # PRECEDING COLOR CHECK: If any other color is more dominant than target_color
+                        target_weight = distribution.get(target_color, 0)
+                        
+                        # Find if any OTHER color (including neutrals) is 'preceding'
+                        # Neutrals included to avoid matching a tiny logo on a black shirt
+                        all_competing_colors = ["red", "green", "blue", "yellow", "orange", "purple", "brown", "black", "white", "gray"]
+                        other_dominant_color = None
+                        highest_weight = 0
+                        
+                        for c, w in distribution.items():
+                            if c in all_competing_colors and c != target_color and w > highest_weight:
+                                highest_weight = w
+                                other_dominant_color = c
+                        
+                        if attribute_confirmed:
+                            # 1. Absolute Weight Check (User's "Absolute Zero" request)
+                            if target_weight < 0.20:
+                                print(f"VETO [ID {track_id}]: Target '{target_color}' weight {target_weight:.2f} is below 20% minimum. Rejected.")
+                                match = False
+                                attribute_confirmed = False
+
+                            # 2. Global Dominance Check (Preceding Logic)
+                            elif other_dominant_color and highest_weight > target_weight:
+                                print(f"VETO [ID {track_id}]: Target '{target_color}'({target_weight:.2f}) preceded by '{other_dominant_color}'({highest_weight:.2f}). Rejected.")
+                                match = False
+                                attribute_confirmed = False
+                            
+                            # 3. Top Color Displacement Veto (If analyzer sees something different as Top 1)
+                            elif detected_color != target_color and detected_color in all_competing_colors:
+                                if target_color in ["black", "gray"] and detected_color in ["black", "gray"]:
+                                    pass # Allow minor confusion
+                                else:
+                                    print(f"VETO [ID {track_id}]: CLIP said '{target_color}', but Analyzer sees '{detected_color}' dominant. Match rejected.")
+                                    match = False
+                                    attribute_confirmed = False
+                            
+                            # 4. Ambiguity Veto
+                            elif detected_color == "unknown":
+                                print(f"VETO [ID {track_id}]: Analyzer found color ambiguous. Rejecting for precision.")
+                                match = False
+                                attribute_confirmed = False
+                        else:
+                            # FALLBACK LOGIC: CLIP was uncertain, rely on dominance and threshold
+                            if detected_color == target_color and target_weight >= 0.20:
+                                print(f"Fallback Active [ID {track_id}]: CLIP uncertain, but Torso confirmed '{target_color}' dominant ({target_weight:.2f}). Match accepted.")
+                                match = True
+                            else:
+                                match = False 
+
                             
                     # Check Actions & Pose (Sitting vs Running)
                     if target_anomaly and not check_violence and match:
@@ -252,6 +323,7 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
                             "object": det["class"],
                             "confidence": det["confidence"],
                             "color": color,
+                            "distribution": distribution, # Add distribution to results
                             "action": action_label,
                             "attributes": matched_attributes,
                             "speed": sp_det.get("speed", 0),
@@ -260,7 +332,7 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
                         })
                         
                     # Annotate the Match Frame explicitly for ANY confirmed match
-                    if is_confirmed:
+                    if match:
                         bx1, by1, bx2, by2 = det["bbox"]
                         color_box = (0, 255, 0) # Green for match
                         cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2), color_box, 3)
@@ -293,19 +365,25 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
         
     try:
         ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-        subprocess.run([
+        cmd = [
             ffmpeg_exe, 
             '-y', 
             '-i', temp_output_path, 
             '-vcodec', 'libx264', 
-            final_output_path
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        ]
+        
+        # Apply aspect ratio if detected
+        if aspect_ratio_str:
+            cmd.extend(['-aspect', aspect_ratio_str])
+            
+        cmd.append(final_output_path)
+        
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
         
         # Clean up the unplayable temp file
         if os.path.exists(temp_output_path):
             os.remove(temp_output_path)
     except Exception as e:
-        print(f"Failed to re-encode video with FFmpeg: {e}")
         # Fallback to the temp raw video if it fails
         if os.path.exists(temp_output_path) and not os.path.exists(final_output_path):
              os.rename(temp_output_path, final_output_path)
@@ -332,7 +410,7 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
         
     return {
         "status": "success",
-        "parsed_query": parsed_query,
+        "parsed_query": {**parsed_query, "aspect_ratio_detected": aspect_ratio_str},
         "processing_time_seconds": round(process_time, 2),
         "matches_found": len(unique_matches),
         "total_unfiltered_frames": len(results_list),

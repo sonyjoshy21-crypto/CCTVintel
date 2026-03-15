@@ -69,6 +69,7 @@ def analyze_endpoint():
         
     try:
         print(f"Analyzing {filename} with query: {query}")
+        frame_skip = data.get('frame_skip', 5) # Default to 5 if not provided
         
         # Initialize progress for this file
         analysis_progress[filename] = {"status": "analyzing", "percent": 0, "message": "Parsing query with Deep Learning..."}
@@ -78,7 +79,7 @@ def analyze_endpoint():
             current_message = message if message else analysis_progress[filename].get("message", "Processing video frames...")
             analysis_progress[filename] = {"status": "analyzing", "percent": percent, "message": current_message}
             
-        result = analyze_video(filepath, query, progress_callback=update_progress)
+        result = analyze_video(filepath, query, frame_skip=frame_skip, progress_callback=update_progress)
         
         # Mark as complete
         analysis_progress[filename] = {"status": "completed", "percent": 100, "message": "Analysis complete!"}

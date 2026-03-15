@@ -5,11 +5,15 @@ import './index.css'
 import { supabase } from './supabaseClient'
 
 function App() {
+  // Constants
+  const GUEST_USER_ID = '00000000-0000-0000-0000-000000000000';
+
   const [file, setFile] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [uploadedFilename, setUploadedFilename] = useState(null)
   
   const [query, setQuery] = useState('')
+  const [frameSkip, setFrameSkip] = useState(5)
   const [analyzing, setAnalyzing] = useState(false)
   const [progress, setProgress] = useState({ percent: 0, message: '' })
   
@@ -24,70 +28,14 @@ function App() {
   const [videoDimensions, setVideoDimensions] = useState({ width: 0, height: 0 })
   const [activeBox, setActiveBox] = useState(null)
 
-  // Auth & View State
+  // View State
   const [view, setView] = useState('home') // 'home', 'results', 'history'
-  const [session, setSession] = useState(null)
-  const [authEmail, setAuthEmail] = useState('')
-  const [authPassword, setAuthPassword] = useState('')
-  const [isLogin, setIsLogin] = useState(true)
-  const [authError, setAuthError] = useState(null)
 
   // History State
   const [history, setHistory] = useState([])
   const [loadingHistory, setLoadingHistory] = useState(false)
-  const [authLoading, setAuthLoading] = useState(false)
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session)
-    })
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session)
-    })
-
-    return () => subscription.unsubscribe()
-  }, [])
-
-  const handleSignUp = async (e) => {
-    e.preventDefault()
-    if (!authEmail || !authPassword) {
-      setAuthError("Please enter both an email and password to create an account.")
-      return
-    }
-    setAuthLoading(true)
-    setAuthError(null)
-    const { error } = await supabase.auth.signUp({
-      email: authEmail,
-      password: authPassword,
-    })
-    if (error) setAuthError(error.message)
-    else setAuthError('Account created! Check your email for a login link, or try signing in directly.')
-    setAuthLoading(false)
-  }
-
-  const handleLogin = async (e) => {
-    e.preventDefault()
-    if (!authEmail || !authPassword) {
-      setAuthError("Please enter both an email and password to sign in.")
-      return
-    }
-    setAuthLoading(true)
-    setAuthError(null)
-    const { error } = await supabase.auth.signInWithPassword({
-      email: authEmail,
-      password: authPassword,
-    })
-    if (error) setAuthError(error.message)
-    setAuthLoading(false)
-  }
-
-  const handleLogout = async () => {
-    await supabase.auth.signOut()
-    setView('home')
-  }
+  // Removed Auth logic per user request
 
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files[0]) {
@@ -156,7 +104,8 @@ function App() {
     try {
       const response = await axios.post('http://localhost:5000/api/analyze', {
         filename: uploadedFilename,
-        query: query
+        query: query,
+        frame_skip: frameSkip
       })
       
       const analysisData = response.data;
@@ -169,10 +118,8 @@ function App() {
       }
       setView('results')
       
-      // Save report to database if logged in
-      if (session?.user?.id) {
-        saveReportToDatabase(analysisData)
-      }
+      // Save report to database (Anonymous Shared History)
+      saveReportToDatabase(analysisData)
     } catch (err) {
       console.error(err)
       setError(err.response?.data?.error || 'Failed to analyze video.')
@@ -205,7 +152,7 @@ function App() {
         .from('reports')
         .insert([
           {
-            user_id: session.user.id,
+            user_id: GUEST_USER_ID,
             video_name: uploadedFilename,
             query: query,
             results: aggregatedSummary
@@ -222,10 +169,10 @@ function App() {
   }
 
   useEffect(() => {
-    if (view === 'history' && session?.user?.id) {
+    if (view === 'history') {
       fetchHistory()
     }
-  }, [view, session])
+  }, [view])
 
   const fetchHistory = async () => {
     setLoadingHistory(true)
@@ -233,7 +180,7 @@ function App() {
       const { data, error } = await supabase
         .from('reports')
         .select('*')
-        .eq('user_id', session.user.id)
+        .eq('user_id', GUEST_USER_ID)
         .order('created_at', { ascending: false })
       
       if (error) throw error
@@ -286,25 +233,17 @@ function App() {
         </div>
         
         <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem' }}>
-          {session && (
-            <button 
-              className="nav-btn" 
-              title="History"
-              onClick={() => setView('history')}
-              style={{ color: view === 'history' ? '#9d4edd' : 'inherit' }}
-            >
-              <History size={20} />
-            </button>
-          )}
+          <button 
+            className="nav-btn" 
+            title="History"
+            onClick={() => setView('history')}
+            style={{ color: view === 'history' ? '#9d4edd' : 'inherit' }}
+          >
+            <History size={20} />
+          </button>
+          
           <button className="nav-btn" title="Settings"><Settings size={20} /></button>
-          {session ? (
-            <button 
-              onClick={handleLogout}
-              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem' }}
-            >
-              <LogOut size={16} /> Sign Out
-            </button>
-          ) : null}
+          
           <div className="status-badge">
             <div className="status-dot"></div>
             Online
@@ -313,76 +252,7 @@ function App() {
       </header>
 
       <div className="app-container">
-        {!session ? (
-          <div className="glass-panel" style={{ maxWidth: '400px', marginTop: '4rem' }}>
-            <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-              <div className="logo-icon-bg" style={{ width: '64px', height: '64px', margin: '0 auto 1rem auto' }}>
-                <Lock size={32} className="logo-icon" />
-              </div>
-              <h2>Secure Access</h2>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '0.5rem' }}>Login to access CCTV Intel Analysis</p>
-            </div>
-
-            <form onSubmit={handleLogin}>
-              <div style={{ marginBottom: '1.5rem' }}>
-                <label className="input-label">Email Address</label>
-                <div className="search-container" style={{ margin: 0 }}>
-                  <User size={18} color="var(--text-muted)" />
-                  <input
-                    type="email"
-                    className="search-input"
-                    placeholder="Enter your email"
-                    value={authEmail}
-                    onChange={(e) => setAuthEmail(e.target.value)}
-                    required
-                  />
-                </div>
-              </div>
-
-              <div style={{ marginBottom: '2rem' }}>
-                <label className="input-label">Password</label>
-                <div className="search-container" style={{ margin: 0 }}>
-                  <Lock size={18} color="var(--text-muted)" />
-                  <input
-                    type="password"
-                    className="search-input"
-                    placeholder="••••••••"
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    required
-                  />
-                </div>
-              </div>
-
-              {authError && (
-                <div style={{ padding: '0.75rem', background: 'rgba(239, 68, 68, 0.1)', color: '#f87171', borderRadius: '8px', fontSize: '0.85rem', marginBottom: '1.5rem', textAlign: 'center' }}>
-                  {authError}
-                </div>
-              )}
-
-              <button 
-                type="submit" 
-                className="btn-primary active-btn" 
-                disabled={authLoading}
-                style={{ marginBottom: '1rem' }}
-              >
-                {authLoading ? <div className="loader" /> : (
-                  <><LogIn size={18} /> Sign In</>
-                )}
-              </button>
-
-              <button 
-                type="button" 
-                className="btn-primary" 
-                onClick={handleSignUp}
-                disabled={authLoading}
-                style={{ background: 'transparent', padding: '0.5rem' }}
-              >
-                Create Account
-              </button>
-            </form>
-          </div>
-        ) : view === 'home' && (
+        {view === 'home' && (
           <>
             <section className="hero-section">
               <div className="hero-pill">
@@ -458,6 +328,32 @@ function App() {
               </div>
               <span className="text-xs" style={{marginBottom: '1.5rem', display: 'block'}}>Describe what you want to detect in the video</span>
 
+              <div style={{ marginBottom: '1.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                  <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>Analysis Precision</span>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--primary)', fontWeight: 600 }}>Skip Every {frameSkip} Frames</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  <span className="text-xs">Faster</span>
+                  <input 
+                    type="range" 
+                    min="1" 
+                    max="20" 
+                    step="1"
+                    value={frameSkip} 
+                    onChange={(e) => setFrameSkip(parseInt(e.target.value))} 
+                    style={{ flex: 1, accentColor: 'var(--primary)' }}
+                    disabled={analyzing}
+                  />
+                  <span className="text-xs">Slower</span>
+                </div>
+                <span className="text-xs" style={{ marginTop: '0.5rem', opacity: 0.7 }}>
+                  {frameSkip >= 15 ? "Best for 60fps+ videos (Ultra Fast)" : 
+                   frameSkip >= 8 ? "Balanced speed for standard CCTV" : 
+                   "Deep analysis (High accuracy, slower)"}
+                </span>
+              </div>
+
               <button 
                 className={`btn-primary ${uploadedFilename && query.trim() && !analyzing ? 'active-btn' : ''}`}
                 onClick={handleAnalyze}
@@ -493,7 +389,7 @@ function App() {
           </>
         )}
 
-        {session && view === 'history' && (
+        {view === 'history' && (
           <div style={{ width: '100%', maxWidth: '1000px', margin: '0 auto' }}>
             <div className="results-header-bar">
               <div>
@@ -561,7 +457,7 @@ function App() {
           </div>
         )}
 
-        {session && view === 'results' && results && (
+        {view === 'results' && results && (
           <div style={{ width: '100%' }}>
             <div className="results-header-bar">
               <div>
@@ -619,7 +515,7 @@ function App() {
                 <div style={{ marginBottom: '2rem' }}>
                   <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
                     {/* Original Video Player */}
-                    <div style={{ flex: '1 1 min(45%, 400px)', display: 'flex', flexDirection: 'column', background: '#000', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                    <div style={{ flex: '1 1 500px', maxWidth: '1000px', display: 'flex', flexDirection: 'column', background: '#000', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
                       <div style={{ padding: '0.5rem', background: 'var(--bg-darker)', textAlign: 'center', fontSize: '0.85rem', fontWeight: 500, color: 'var(--text-muted)', borderBottom: '1px solid var(--border-color)' }}>
                         Original Footage
                       </div>
@@ -666,13 +562,13 @@ function App() {
 
                     {/* Annotated Video Player from Backend */}
                     {results.annotated_video_path && (
-                      <div style={{ flex: '1 1 min(45%, 400px)', display: 'flex', flexDirection: 'column', background: '#000', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                      <div style={{ flex: '1 1 500px', maxWidth: '1000px', display: 'flex', flexDirection: 'column', background: '#000', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
                         <div style={{ padding: '0.5rem', background: 'var(--bg-darker)', textAlign: 'center', fontSize: '0.85rem', fontWeight: 500, color: '#9d4edd', borderBottom: '1px solid var(--border-color)' }}>
                           <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}>
                             <Zap size={14} /> AI Annotated (YOLO + CLIP)
                           </span>
                         </div>
-                        <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9' }}>
+                        <div style={{ position: 'relative', width: '100%', aspectRatio: videoDimensions.width && videoDimensions.height ? `${videoDimensions.width} / ${videoDimensions.height}` : '16/9' }}>
                            <video 
                             src={annotatedVideoUrl}
                             controls 
@@ -729,7 +625,7 @@ function App() {
                     <div key={idx} style={{ background: 'var(--bg-darker)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '1rem' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
                         <span style={{ fontWeight: 600 }}>{res.object}</span>
-                        <span style={{ color: 'var(--primary)', fontSize: '0.85rem' }}>Conf: {(res.confidence * 100).toFixed(0)}%</span>
+                        <span style={{ color: 'var(--primary)', fontSize: '0.85rem' }}>Conf: {(res.confidence > 1 ? res.confidence : res.confidence * 100).toFixed(0)}%</span>
                       </div>
                       <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
                         {res.color !== "unknown" && <span>Color: {res.color} • </span>}

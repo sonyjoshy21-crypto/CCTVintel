@@ -104,8 +104,20 @@ def _heuristic_parse(query):
     for o in objects:
         if o in query:
             # Map common synonyms to COCO classes
-            if o in ["man", "woman", "guy", "boy", "girl"]: 
+            if o in ["person", "man", "woman", "guy", "boy", "girl"]: 
                 extracted["object"] = "person"
+                # If we have a color and it's a person, treat it as an attribute 
+                # (e.g. "red shirt") to trigger CLIP instead of simple K-Means
+                if extracted["color"]:
+                    # Check for explicit shirt/clothes mention or just use color
+                    if "shirt" in query:
+                        extracted["attributes"] = f"{extracted['color']} shirt"
+                    elif "hoodie" in query:
+                        extracted["attributes"] = f"{extracted['color']} hoodie"
+                    elif "jacket" in query:
+                        extracted["attributes"] = f"{extracted['color']} jacket"
+                    else:
+                        extracted["attributes"] = f"{extracted['color']} clothing"
             else:
                 extracted["object"] = o
             break
@@ -124,8 +136,13 @@ if __name__ == "__main__":
     test_queries = [
         "Find a red car parked",
         "Person wearing a blue shirt",
+        "a guy with a green hoodie",
+        "a girl with a red jacket",
+        "a man in black",
         "A black backpack left behind"
     ]
+    print("\n--- Testing NLP Parser ---")
     for q in test_queries:
-        print(f"Query: {q}")
-        print(f"Parsed: {parse_prompt(q)}\n")
+        print(f"Query: \"{q}\"")
+        res = parse_prompt(q)
+        print(f"Parsed: {res}\n")

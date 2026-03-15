@@ -59,9 +59,11 @@ def classify_attributes(image_rgb, text_prompts):
         logits_per_image = outputs.logits_per_image # this is the image-text similarity score
         probs = logits_per_image.softmax(dim=1) # normalize to probabilities
         
-        # Get index of the max probability
+        # Get index of the max probability and the value itself
         best_match_idx = probs.argmax().item()
-        return text_prompts[best_match_idx]
+        confidence_score = probs[0][best_match_idx].item()
+        
+        return text_prompts[best_match_idx], confidence_score
         
     except Exception as e:
         print(f"Error during CLIP classification: {e}")
