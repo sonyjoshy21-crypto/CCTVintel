@@ -9,3 +9,5 @@ torch
 torchvision
 tensorflow==2.18.0
 h5py
+requests
+transformers

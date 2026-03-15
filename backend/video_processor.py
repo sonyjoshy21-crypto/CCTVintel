@@ -22,7 +22,7 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
     print(f"Parsing query: '{query}'")
     
     if progress_callback:
-        progress_callback(5, "Querying Large Language Model...") 
+        progress_callback(5, "Querying Large Language Model...", detail=f"User Query: '{query}'") 
     parsed_query = parse_prompt(query)
     target_object = parsed_query.get("object")
     target_color = parsed_query.get("color")
@@ -31,7 +31,8 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
     target_anomaly = parsed_query.get("anomaly")
     target_attributes = parsed_query.get("attributes")
     
-    print(f"Parsed Query JSON: {parsed_query} (Target Color: {target_color})")
+    if progress_callback:
+        progress_callback(8, "NLP Parsing Complete.", detail=f"LLM Parsed JSON: {parsed_query}")
     
     check_violence = False
     violence_model = None
@@ -87,11 +88,13 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
     out_video = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
         
     if progress_callback:
-        progress_callback(10, "Loading Video & Initializing Models...") 
+        progress_callback(10, "Loading Video & Initializing Models...", detail="Loading YOLOv8 and Pose models...") 
         
     if check_violence:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         model_path = os.path.join(current_dir, "models", "saved_violence_model.keras")
+        if progress_callback:
+             progress_callback(12, "Loading Violence Model...", detail=f"Loading Keras model from {model_path}")
         violence_model = load_violence_model(model_path)
 
     results_list = []
@@ -127,6 +130,7 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
                 prediction = classify_clip(violence_model, list(frame_buffer))
                 if prediction['label'] == 'Violence':
                     timestamp_sec = frame_count / fps
+                    detail_msg = f"VIOLENCE ALERT: Confidence {prediction['score']:.2f} at {timestamp_sec:.2f}s"
                     results_list.append({
                         "timestamp": round(timestamp_sec, 2),
                         "frame_index": frame_count,
@@ -138,6 +142,8 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
                         "bbox": [0, 0, width, height], # Full frame for violence
                         "track_id": violence_event_counter
                     })
+                    if progress_callback:
+                        progress_callback(int(10 + (frame_count / total_frames) * 85), detail=detail_msg)
                     violence_event_counter -= 1
                     
                     # Annotate frame for violence
@@ -149,15 +155,16 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
             
             # 1. Run Object Det + Tracking + (Optional) Pose
             # Only trigger heavy Pose model if we need to evaluate a physical action
-            requires_pose_eval = bool(target_anomaly and not check_violence) 
-            raw_detections = detect_and_track_objects_in_frame(
-                frame, 
-                conf_threshold=conf_threshold, 
-                needs_pose=requires_pose_eval
-            )
+            needs_pose = (target_anomaly in ["sitting", "crouching", "falling"])
+            if frame_count % frame_skip == 0:
+                if needs_pose and progress_callback and frame_count % 30 == 0:
+                    progress_callback(last_reported_percent, detail="Running Pose Estimation Pass...")
+                detections = detect_and_track_objects_in_frame(frame, conf_threshold=conf_threshold, needs_pose=needs_pose)
+            else:
+                detections = [] # Skip detection but we will use the tracker's predicted state or just draw confirmed IDs later
             
             valid_detections = []
-            for det in raw_detections:
+            for det in detections:
                 c_name = det["class"]
                 conf = det["confidence"]
                 
@@ -186,10 +193,19 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
                 if det["class"] == target_object:
                     match = True
                     track_id = det["id"]
-                    action_label = sp_det.get("action", "unknown")
-                    distribution = {} 
-                    color = "unknown"
-                    matched_attributes = "none"
+                    
+                    # LOGIC: If this ID has ALREADY been confirmed as a match, we can skip complex analysis
+                    # and just keep it highlighted. This provides "Persistent Tracking".
+                    if track_id != -1 and track_id in confirmed_match_ids:
+                        match = True
+                        action_label = sp_det.get("action", "unknown")
+                        color = "unknown"
+                        matched_attributes = "none"
+                    else:
+                        action_label = sp_det.get("action", "unknown")
+                        distribution = {} 
+                        color = "unknown"
+                        matched_attributes = "none"
                     
                     # Handle Complex Attributes via CLIP
                     attribute_confirmed = False
@@ -311,9 +327,16 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
                             match = False
                             
                     if match and track_id != -1:
-                        confirmed_match_ids.add(track_id)
+                        if track_id not in confirmed_match_ids:
+                            if progress_callback:
+                                progress_callback(last_reported_percent, detail=f"MATCH CONFIRMED: Track ID {track_id} fits query criteria.")
+                            confirmed_match_ids.add(track_id)
                         
                     is_confirmed = track_id in confirmed_match_ids
+                    
+                    # Force match to True if the ID is already confirmed (Persistence)
+                    if is_confirmed:
+                        match = True
                             
                     # Only append to JSON results sparsely to not bloat the UI, but we matched the logic above
                     if match and (frame_count % frame_skip == 0):
@@ -331,19 +354,11 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
                             "track_id": track_id
                         })
                         
-                    # Annotate the Match Frame explicitly for ANY confirmed match
-                    if match:
+                    # FINAL ANNOTATION: Only draw if it's currently matching or was confirmed previously
+                    if match or is_confirmed:
                         bx1, by1, bx2, by2 = det["bbox"]
                         color_box = (0, 255, 0) # Green for match
                         cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2), color_box, 3)
-                        
-                        label_text = f"ID:{track_id} {det['class']}"
-                        if target_attributes and matched_attributes == target_attributes:
-                            label_text += f" [{target_attributes}]"
-                        if target_anomaly:
-                            label_text += f" ({action_label})"
-                            
-                        cv2.putText(annotated_frame, label_text, (bx1, max(20, by1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_box, 2)
                         
                         # Draw Pose Keypoints if person
                         if det["keypoints"]:

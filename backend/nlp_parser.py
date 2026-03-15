@@ -48,6 +48,8 @@ Extract these keys if present:
 - "anomaly": Any specific behavior or action mentioned (e.g. "running", "parked", "fighting", "sitting"). If none, use null.
 - "attributes": A string containing specific clothing items, accessories, or secondary descriptors mentioned (e.g. "blue hat", "spectacles", "red backpack"). If none, use null.
 
+CRITICAL INSTRUCTION: If the user does not explicitly mention a color or attribute, you MUST use null. DO NOT guess or assume details based on the object type. If unsure, use null.
+
 Output exactly a JSON object and nothing else."""
 
     user_prompt = f"Query: \"{query}\"\nOutput JSON:"
@@ -87,7 +89,7 @@ def _heuristic_parse(query):
     query = query.lower()
     
     colors = ["red", "blue", "green", "black", "white", "yellow", "gray", "silver", "orange", "purple", "brown"]
-    objects = ["car", "person", "man", "woman", "guy", "boy", "girl", "truck", "bus", "bicycle", "motorcycle", "bag", "backpack", "dog", "cat"]
+    objects = ["car", "person", "man", "woman", "guy", "boy", "girl", "people", "human", "humans", "crowd", "truck", "bus", "bicycle", "motorcycle", "bag", "backpack", "dog", "cat"]
     
     extracted = {
         "object": None,
@@ -104,7 +106,7 @@ def _heuristic_parse(query):
     for o in objects:
         if o in query:
             # Map common synonyms to COCO classes
-            if o in ["person", "man", "woman", "guy", "boy", "girl"]: 
+            if o in ["person", "man", "woman", "guy", "boy", "girl", "people", "human", "humans", "crowd"]: 
                 extracted["object"] = "person"
                 # If we have a color and it's a person, treat it as an attribute 
                 # (e.g. "red shirt") to trigger CLIP instead of simple K-Means

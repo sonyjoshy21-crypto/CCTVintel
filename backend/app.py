@@ -1,8 +1,15 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
+import time
 import traceback
 from video_processor import analyze_video
+
+import logging
+
+# Silence Flask/Werkzeug terminal spam
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
 app = Flask(__name__)
 # Enable CORS for the React frontend
@@ -10,6 +17,19 @@ CORS(app)
 
 # Global dictionary to store analysis progress in memory
 analysis_progress = {}
+# Global list to store detailed internal logs for the Desktop Monitor
+app_logs = []
+
+def add_log(message):
+    """Adds a timestamped log message to the global log history."""
+    timestamp = time.strftime("%H:%M:%S")
+    log_entry = f"[{timestamp}] {message}"
+    app_logs.append(log_entry)
+    # Keep logs to a reasonable limit (last 500)
+    if len(app_logs) > 500:
+        app_logs.pop(0)
+    # Also print to terminal so we don't lose them entirely
+    print(log_entry)
 
 # Create uploads directory if it doesn't exist
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__name__)), "uploads")
@@ -54,6 +74,11 @@ def get_progress(filename):
     progress_data = analysis_progress.get(filename, {"status": "not_started", "percent": 0, "message": "Waiting to start..."})
     return jsonify(progress_data), 200
 
+@app.route('/api/logs', methods=['GET'])
+def get_logs():
+    """Returns the full log history for the Desktop Monitor applet."""
+    return jsonify({"logs": app_logs}), 200
+
 @app.route('/api/analyze', methods=['POST'])
 def analyze_endpoint():
     data = request.json
@@ -75,9 +100,11 @@ def analyze_endpoint():
         analysis_progress[filename] = {"status": "analyzing", "percent": 0, "message": "Parsing query with Deep Learning..."}
         
         # Define a callback function to update progress
-        def update_progress(percent, message=None):
+        def update_progress(percent, message=None, detail=None):
             current_message = message if message else analysis_progress[filename].get("message", "Processing video frames...")
             analysis_progress[filename] = {"status": "analyzing", "percent": percent, "message": current_message}
+            if detail:
+                add_log(detail)
             
         result = analyze_video(filepath, query, frame_skip=frame_skip, progress_callback=update_progress)
         
