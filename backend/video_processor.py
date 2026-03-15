@@ -4,7 +4,7 @@ import time
 import subprocess
 import imageio_ffmpeg
 from collections import deque
-from yolo_detector import detect_and_track_objects_in_frame
+from yolo_detector import detect_and_track_objects_in_frame, get_yolo_models
 from color_analyzer import analyze_object_attributes, get_mapped_color
 from clip_classifier import classify_attributes
 from nlp_parser import parse_prompt
@@ -22,8 +22,15 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
     print(f"Parsing query: '{query}'")
     
     if progress_callback:
-        progress_callback(5, "Querying Large Language Model...", detail=f"User Query: '{query}'") 
-    parsed_query = parse_prompt(query)
+        progress_callback(5, "Querying Large Language Model...", detail=f"User Query: '{query}'", category="ai") 
+    
+    try:
+        parsed_query = parse_prompt(query)
+    except Exception as e:
+        if progress_callback:
+            progress_callback(5, "NLP Parsing Error", detail=f"LLM Failure: {str(e)}", category="error")
+        raise
+        
     target_object = parsed_query.get("object")
     target_color = parsed_query.get("color")
     if target_color:
@@ -32,7 +39,7 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
     target_attributes = parsed_query.get("attributes")
     
     if progress_callback:
-        progress_callback(8, "NLP Parsing Complete.", detail=f"LLM Parsed JSON: {parsed_query}")
+        progress_callback(8, "NLP Parsing Complete.", detail=f"LLM Parsed JSON: {parsed_query}", category="ai")
     
     check_violence = False
     violence_model = None
@@ -48,12 +55,16 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
         
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
+        if progress_callback:
+            progress_callback(0, "Input Failure", detail=f"Could not open video file: {video_path}", category="error")
         raise ValueError(f"Could not open video: {video_path}")
         
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if progress_callback:
+        progress_callback(9, "Metadata Extracted", detail=f"Video Info: {width}x{height} @ {fps} FPS, Total Frames: {total_frames}")
     if fps == 0 or fps != fps:
         fps = 30.0 
         
@@ -88,7 +99,14 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
     out_video = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
         
     if progress_callback:
-        progress_callback(10, "Loading Video & Initializing Models...", detail="Loading YOLOv8 and Pose models...") 
+        progress_callback(10, "Initializing Models...", detail="Loading YOLOv8 and Pose models...") 
+    
+    try:
+        _ = get_yolo_models() # Warm up the models
+    except Exception as e:
+        if progress_callback:
+            progress_callback(10, "Model Initialization Failure", detail=f"YOLO/Pose Model Error: {str(e)}", category="error")
+        raise
         
     if check_violence:
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -121,7 +139,9 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
         if progress_callback and frame_count % 30 == 0 and total_frames > 0:
             current_percent = int(10 + (frame_count / total_frames) * 85)
             if current_percent > last_reported_percent:
-                progress_callback(current_percent, f"Running AI Analysis (Frame {frame_count}/{total_frames})...")
+                detail_msg = f"Processing Frame {frame_count}/{total_frames} (Matches: {len(confirmed_match_ids)})"
+                ui_msg = f"Analyzing Frame {frame_count}/{total_frames}..."
+                progress_callback(current_percent, ui_msg, detail=detail_msg, matches=len(confirmed_match_ids))
                 last_reported_percent = current_percent
             
         if check_violence:
@@ -157,11 +177,14 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
             # Only trigger heavy Pose model if we need to evaluate a physical action
             needs_pose = (target_anomaly in ["sitting", "crouching", "falling"])
             if frame_count % frame_skip == 0:
-                if needs_pose and progress_callback and frame_count % 30 == 0:
-                    progress_callback(last_reported_percent, detail="Running Pose Estimation Pass...")
-                detections = detect_and_track_objects_in_frame(frame, conf_threshold=conf_threshold, needs_pose=needs_pose)
+                try:
+                    detections = detect_and_track_objects_in_frame(frame, conf_threshold=conf_threshold, needs_pose=needs_pose)
+                except Exception as e:
+                    if progress_callback:
+                        progress_callback(last_reported_percent, detail=f"YOLO/Pose Inference Error: {str(e)}", category="error")
+                    detections = []
             else:
-                detections = [] # Skip detection but we will use the tracker's predicted state or just draw confirmed IDs later
+                detections = [] 
             
             valid_detections = []
             for det in detections:
@@ -225,11 +248,15 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
                                 # High-quality prompt pair: Re-balanced for better matching
                                 prompts = [f"a person wearing {target_attributes}", "a person in different clothes"]
                                 crop_rgb = cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB)
-                                best_match, clip_conf = classify_attributes(crop_rgb, prompts)
                                 
-                                # Debug log for fine-tuning
-                                # if clip_conf > 0.4: # Only log if there's some signal
-                                #    print(f"CLIP Trace [ID {track_id}]: Target='{target_attributes}' | Winner='{best_match}' | Conf={clip_conf:.2f}")
+                                try:
+                                    best_match, clip_conf = classify_attributes(crop_rgb, prompts)
+                                    if progress_callback:
+                                        progress_callback(last_reported_percent, detail=f"CLIP [ID {track_id}]: Winner='{best_match}' Conf={clip_conf:.2f}", category="ai")
+                                except Exception as e:
+                                    if progress_callback:
+                                        progress_callback(last_reported_percent, detail=f"CLIP Inference Failure (ID {track_id}): {str(e)}", category="error")
+                                    best_match, clip_conf = "none", 0.0
                                 
                                 # STRICKER BALANCED THRESHOLD (0.65) for higher accuracy
                                 if best_match == prompts[0] and clip_conf >= 0.65:
@@ -376,7 +403,7 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
     
     # --- FFmpeg H264 Web Conversion ---
     if progress_callback:
-        progress_callback(95, "Encoding Video for Web Playback...")
+        progress_callback(95, "Encoding Output Video...", detail="Starting FFmpeg libx264 conversion Pass...")
         
     try:
         ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
@@ -385,6 +412,8 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
             '-y', 
             '-i', temp_output_path, 
             '-vcodec', 'libx264', 
+            '-preset', 'ultrafast', # SCARY FAST ENCODING
+            '-crf', '28', # Balanced quality/size for preview
         ]
         
         # Apply aspect ratio if detected

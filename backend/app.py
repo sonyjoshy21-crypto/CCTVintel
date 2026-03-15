@@ -17,19 +17,44 @@ CORS(app)
 
 # Global dictionary to store analysis progress in memory
 analysis_progress = {}
-# Global list to store detailed internal logs for the Desktop Monitor
-app_logs = []
+# Segmented logs for the Desktop Monitor
+ai_logs = []
+sys_logs = []
+app_logs = [] # Legacy compatibility
 
-def add_log(message):
-    """Adds a timestamped log message to the global log history."""
+def add_log(message, category="system"):
+    """Adds a timestamped log message to the appropriate category."""
     timestamp = time.strftime("%H:%M:%S")
     log_entry = f"[{timestamp}] {message}"
-    app_logs.append(log_entry)
-    # Keep logs to a reasonable limit (last 500)
-    if len(app_logs) > 500:
-        app_logs.pop(0)
-    # Also print to terminal so we don't lose them entirely
-    print(log_entry)
+    
+    if category == "ai":
+        ai_logs.append(log_entry)
+        if len(ai_logs) > 300: ai_logs.pop(0)
+    elif category == "error":
+        sys_logs.append(f"!! ERROR !! {log_entry}")
+    else:
+        sys_logs.append(log_entry)
+        if len(sys_logs) > 300: sys_logs.pop(0)
+        
+    # Also print to terminal for dev visibility
+    print(f"{category.upper()}: {log_entry}")
+
+def set_error(filename, error_msg):
+    """Logs a critical failure and updates the analysis state."""
+    add_log(f"CRITICAL FAILURE: {error_msg}", category="error")
+    analysis_progress[filename] = {
+        "status": "error", 
+        "percent": 0, 
+        "message": "Analysis Failed",
+        "error_log": error_msg
+    }
+
+def reset_logs():
+    """Clears all logs for a fresh analysis session."""
+    global ai_logs, sys_logs
+    ai_logs.clear()
+    sys_logs.clear()
+    add_log("--- NEW SESSION STARTED ---", category="system")
 
 # Create uploads directory if it doesn't exist
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__name__)), "uploads")
@@ -76,8 +101,25 @@ def get_progress(filename):
 
 @app.route('/api/logs', methods=['GET'])
 def get_logs():
-    """Returns the full log history for the Desktop Monitor applet."""
-    return jsonify({"logs": app_logs}), 200
+    """Returns the segmented logs and current metrics for the Desktop Monitor."""
+    # Find the first active analysis to get current metrics
+    active_filename = next(iter(analysis_progress), None)
+    metrics = {
+        "percent": 0,
+        "matches": 0,
+        "stage": "Idle"
+    }
+    if active_filename:
+        data = analysis_progress[active_filename]
+        metrics["percent"] = data.get("percent", 0)
+        metrics["matches"] = data.get("match_count", 0)
+        metrics["stage"] = data.get("message", "Processing")
+        
+    return jsonify({
+        "ai_logs": ai_logs,
+        "sys_logs": sys_logs,
+        "metrics": metrics
+    }), 200
 
 @app.route('/api/analyze', methods=['POST'])
 def analyze_endpoint():
@@ -93,18 +135,28 @@ def analyze_endpoint():
         return jsonify({"error": f"Uploaded video {filename} not found."}), 404
         
     try:
+        reset_logs() # Clear old monitor logs for the new analysis
         print(f"Analyzing {filename} with query: {query}")
         frame_skip = data.get('frame_skip', 5) # Default to 5 if not provided
         
         # Initialize progress for this file
-        analysis_progress[filename] = {"status": "analyzing", "percent": 0, "message": "Parsing query with Deep Learning..."}
+        analysis_progress[filename] = {
+            "status": "analyzing", 
+            "percent": 0, 
+            "message": "Parsing query...",
+            "match_count": 0
+        }
         
         # Define a callback function to update progress
-        def update_progress(percent, message=None, detail=None):
-            current_message = message if message else analysis_progress[filename].get("message", "Processing video frames...")
-            analysis_progress[filename] = {"status": "analyzing", "percent": percent, "message": current_message}
+        def update_progress(percent, message=None, detail=None, category="system", matches=None):
+            if message:
+                analysis_progress[filename]["message"] = message
+            analysis_progress[filename]["percent"] = percent
+            if matches is not None:
+                analysis_progress[filename]["match_count"] = matches
+            
             if detail:
-                add_log(detail)
+                add_log(detail, category=category)
             
         result = analyze_video(filepath, query, frame_skip=frame_skip, progress_callback=update_progress)
         
@@ -113,8 +165,8 @@ def analyze_endpoint():
         
         return jsonify(result), 200
     except Exception as e:
-        # Mark as error
-        analysis_progress[filename] = {"status": "error", "percent": 0, "message": f"Error: {str(e)}"}
+        # Mark as error in both state and logs
+        set_error(filename, str(e))
         traceback.print_exc()
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
