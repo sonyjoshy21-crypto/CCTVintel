@@ -15,32 +15,37 @@ app = Flask(__name__)
 # Enable CORS for the React frontend
 CORS(app)
 
-# Global dictionary to store analysis progress in memory
-analysis_progress = {}
-# Segmented logs for the Desktop Monitor
-ai_logs = []
-sys_logs = []
-app_logs = [] # Legacy compatibility
+# Global state management
+analysis_progress = {} # Dictionary to store analysis progress
+ai_logs = []           # AI Logic logs
+sys_logs = []          # System/Engine logs
+app_logs = []          # Legacy compatibility
+stop_flags = {}        # Cancellation flags
 
 def add_log(message, category="system"):
     """Adds a timestamped log message to the appropriate category."""
+    global ai_logs, sys_logs
     timestamp = time.strftime("%H:%M:%S")
     log_entry = f"[{timestamp}] {message}"
     
-    if category == "ai":
-        ai_logs.append(log_entry)
-        if len(ai_logs) > 300: ai_logs.pop(0)
-    elif category == "error":
-        sys_logs.append(f"!! ERROR !! {log_entry}")
-    else:
-        sys_logs.append(log_entry)
-        if len(sys_logs) > 300: sys_logs.pop(0)
+    try:
+        if category == "ai":
+            ai_logs.append(log_entry)
+            if len(ai_logs) > 300: ai_logs.pop(0)
+        elif category == "error":
+            sys_logs.append(f"!! ERROR !! {log_entry}")
+        else:
+            sys_logs.append(log_entry)
+            if len(sys_logs) > 300: sys_logs.pop(0)
+    except Exception as e:
+        print(f"Log recording error: {e}")
         
     # Also print to terminal for dev visibility
     print(f"{category.upper()}: {log_entry}")
 
 def set_error(filename, error_msg):
     """Logs a critical failure and updates the analysis state."""
+    global analysis_progress
     add_log(f"CRITICAL FAILURE: {error_msg}", category="error")
     analysis_progress[filename] = {
         "status": "error", 
@@ -96,24 +101,40 @@ def get_video(filename):
 @app.route('/api/progress/<filename>', methods=['GET'])
 def get_progress(filename):
     """Returns the current analysis progress for a given filename."""
+    global analysis_progress
     progress_data = analysis_progress.get(filename, {"status": "not_started", "percent": 0, "message": "Waiting to start..."})
     return jsonify(progress_data), 200
+
+@app.route('/api/cancel/<filename>', methods=['POST'])
+def cancel_analysis(filename):
+    """Sets a stop flag to abort the analysis loop for a specific file."""
+    global stop_flags
+    stop_flags[filename] = True
+    add_log(f"CANCEL SIGNAL RECEIVED for {filename}", category="system")
+    return jsonify({"message": "Cancel signal sent"}), 200
 
 @app.route('/api/logs', methods=['GET'])
 def get_logs():
     """Returns the segmented logs and current metrics for the Desktop Monitor."""
+    global analysis_progress, ai_logs, sys_logs
+    
     # Find the first active analysis to get current metrics
-    active_filename = next(iter(analysis_progress), None)
     metrics = {
         "percent": 0,
         "matches": 0,
         "stage": "Idle"
     }
-    if active_filename:
-        data = analysis_progress[active_filename]
-        metrics["percent"] = data.get("percent", 0)
-        metrics["matches"] = data.get("match_count", 0)
-        metrics["stage"] = data.get("message", "Processing")
+    
+    try:
+        active_filename = next(iter(analysis_progress), None)
+        if active_filename:
+            data = analysis_progress[active_filename]
+            metrics["percent"] = data.get("percent", 0)
+            metrics["matches"] = data.get("match_count", 0)
+            metrics["stage"] = data.get("message", "Processing")
+    except Exception as e:
+        # Suppress race condition noise during reloads
+        pass
         
     return jsonify({
         "ai_logs": ai_logs,
@@ -139,6 +160,9 @@ def analyze_endpoint():
         print(f"Analyzing {filename} with query: {query}")
         frame_skip = data.get('frame_skip', 5) # Default to 5 if not provided
         
+        # Reset stop flag for this session
+        stop_flags[filename] = False
+        
         # Initialize progress for this file
         analysis_progress[filename] = {
             "status": "analyzing", 
@@ -158,7 +182,10 @@ def analyze_endpoint():
             if detail:
                 add_log(detail, category=category)
             
-        result = analyze_video(filepath, query, frame_skip=frame_skip, progress_callback=update_progress)
+        def is_cancelled():
+            return stop_flags.get(filename, False)
+            
+        result = analyze_video(filepath, query, frame_skip=frame_skip, progress_callback=update_progress, stop_check=is_cancelled)
         
         # Mark as complete
         analysis_progress[filename] = {"status": "completed", "percent": 100, "message": "Analysis complete!"}

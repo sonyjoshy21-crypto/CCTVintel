@@ -1,33 +1,43 @@
-from ultralytics import YOLO
 import cv2
 import os
+
+import threading
 
 # Lazy load model variables
 _obj_model = None
 _pose_model = None
 _models_load_attempted = False
+_load_lock = threading.Lock()
 
-def get_yolo_models():
+def get_yolo_models(progress_callback=None):
     global _obj_model, _pose_model, _models_load_attempted
-    if not _models_load_attempted:
-        _models_load_attempted = True
-        
-        # Load standard object detection model (80 COCO classes: cars, dogs, etc)
-        obj_model_path = "yolov8n.pt" # Or 'yolov8s.pt' if you prefer higher accuracy
-        try:
-            print(f"Loading YOLOv8 Object model from {obj_model_path}...")
-            _obj_model = YOLO(obj_model_path)
-        except Exception as e:
-            print(f"Error loading {obj_model_path}: {e}")
-            
-        # Load the Pose model strictly for human keypoints
-        pose_model_path = "yolov8s-pose.pt"
-        try:
-            print(f"Loading YOLOv8 Pose model from {pose_model_path}...")
-            _pose_model = YOLO(pose_model_path)
-        except Exception as e:
-            print(f"Error loading {pose_model_path}: {e}")
-            
+    
+    with _load_lock:
+        if not _models_load_attempted:
+            try:
+                from ultralytics import YOLO
+                
+                # 1. Load standard object detection model
+                obj_model_path = "yolov8n.pt"
+                if not os.path.exists(obj_model_path) and progress_callback:
+                    progress_callback(10, "Downloading AI Weights...", detail="Downloading yolov8n.pt (approx 6.2MB)...", category="system")
+                _obj_model = YOLO(obj_model_path)
+                
+                # 2. Load the Pose model
+                pose_model_path = "yolov8s-pose.pt"
+                if not os.path.exists(pose_model_path) and progress_callback:
+                    progress_callback(10, "Downloading AI Weights...", detail="Downloading yolov8s-pose.pt (approx 25MB)... This may take a minute.", category="system")
+                _pose_model = YOLO(pose_model_path)
+                
+                _models_load_attempted = True
+            except Exception as e:
+                print(f"CRITICAL MODEL LOAD ERROR: {e}")
+                if progress_callback:
+                    progress_callback(10, "Model Load Failed", detail=f"Error: {str(e)}", category="error")
+                # Reset so we can try again on next request
+                _models_load_attempted = False
+                raise e
+                
     return _obj_model, _pose_model
 
 def detect_and_track_objects_in_frame(frame, conf_threshold=0.3, needs_pose=False):

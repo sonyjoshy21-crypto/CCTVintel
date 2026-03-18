@@ -11,7 +11,7 @@ from nlp_parser import parse_prompt
 from action_tracker import SimpleTracker
 from violence_detector import load_violence_model, classify_clip
 
-def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress_callback=None):
+def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress_callback=None, stop_check=None):
     """
     Analyzes a video for specific objects and attributes based on a natural language query.
     Generates an annotated output video.
@@ -102,7 +102,7 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
         progress_callback(10, "Initializing Models...", detail="Loading YOLOv8 and Pose models...") 
     
     try:
-        _ = get_yolo_models() # Warm up the models
+        _ = get_yolo_models(progress_callback=progress_callback) # Warm up the models
     except Exception as e:
         if progress_callback:
             progress_callback(10, "Model Initialization Failure", detail=f"YOLO/Pose Model Error: {str(e)}", category="error")
@@ -134,6 +134,25 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
         if not ret:
             break
             
+        # --- STABILITY RESIZER (Downscale 4K for Brain Logic) ---
+        # Processing 4K frames with 4 models simultaneously (YOLO, Pose, CLIP, Violence) 
+        # is the main cause of "Failed to analyze" (OOM crashes).
+        # We cap the "Brain" resolution at 1080p (1920 width).
+        analysis_frame = frame
+        scale_factor = 1.0
+        if width > 1280:
+            scale_factor = 1280.0 / width
+            new_w = 1280
+            new_h = int(height * scale_factor)
+            analysis_frame = cv2.resize(frame, (new_w, new_h))
+            
+        # Check if we should abort early
+        if stop_check and stop_check():
+            print(f"ABORTING analysis for {video_path} as per stop_check.")
+            if progress_callback:
+                progress_callback(last_reported_percent, "Analysis Cancelled", detail="User terminated the session.")
+            break
+            
         annotated_frame = frame.copy()
             
         if progress_callback and frame_count % 30 == 0 and total_frames > 0:
@@ -145,7 +164,7 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
                 last_reported_percent = current_percent
             
         if check_violence:
-            frame_buffer.append(frame)
+            frame_buffer.append(analysis_frame)
             if len(frame_buffer) == 16 and frame_count % 16 == 0:
                 prediction = classify_clip(violence_model, list(frame_buffer))
                 if prediction['label'] == 'Violence':
@@ -166,9 +185,26 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
                         progress_callback(int(10 + (frame_count / total_frames) * 85), detail=detail_msg)
                     violence_event_counter -= 1
                     
-                    # Annotate frame for violence
+                    # Annotate frame for violence (Drawn FIRST so people layer on top)
                     cv2.rectangle(annotated_frame, (0, 0), (width, height), (0, 0, 255), 10)
-                    cv2.putText(annotated_frame, "VIOLENCE DETECTED", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)
+                    
+                    # Top-Right Banner with background for clarity
+                    msg = "VIOLENCE DETECTED"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 1.2
+                    thickness = 3
+                    text_size = cv2.getTextSize(msg, font, font_scale, thickness)[0]
+                    text_width, text_height = text_size[0], text_size[1]
+                    
+                    # Draw semi-transparent background for text
+                    rect_x1, rect_y1 = width - text_width - 70, 20
+                    rect_x2, rect_y2 = width - 20, 20 + text_height + 40
+                    overlay = annotated_frame.copy()
+                    cv2.rectangle(overlay, (rect_x1, rect_y1), (rect_x2, rect_y2), (0, 0, 0), -1)
+                    cv2.addWeighted(overlay, 0.6, annotated_frame, 0.4, 0, annotated_frame)
+                    
+                    # Position text in top-right
+                    cv2.putText(annotated_frame, msg, (width - text_width - 45, 20 + text_height + 20), font, font_scale, (0, 0, 255), thickness)
 
         if target_object:
             timestamp_sec = frame_count / fps
@@ -178,7 +214,15 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
             needs_pose = (target_anomaly in ["sitting", "crouching", "falling"])
             if frame_count % frame_skip == 0:
                 try:
-                    detections = detect_and_track_objects_in_frame(frame, conf_threshold=conf_threshold, needs_pose=needs_pose)
+                    detections = detect_and_track_objects_in_frame(analysis_frame, conf_threshold=conf_threshold, needs_pose=needs_pose)
+                    # Rescale detection bboxes back to original 4K resolution for the user's video writer
+                    if scale_factor != 1.0:
+                        for d in detections:
+                            d["bbox"] = [int(x / scale_factor) for x in d["bbox"]]
+                            if d["keypoints"]:
+                                for kp in d["keypoints"]:
+                                    kp[0] = kp[0] / scale_factor
+                                    kp[1] = kp[1] / scale_factor
                 except Exception as e:
                     if progress_callback:
                         progress_callback(last_reported_percent, detail=f"YOLO/Pose Inference Error: {str(e)}", category="error")
@@ -387,6 +431,12 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
                         color_box = (0, 255, 0) # Green for match
                         cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2), color_box, 3)
                         
+                        # Draw Track ID Label
+                        label = f"ID: {track_id}"
+                        t_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                        cv2.rectangle(annotated_frame, (bx1, by1 - 25), (bx1 + t_size[0] + 5, by1), color_box, -1)
+                        cv2.putText(annotated_frame, label, (bx1 + 2, by1 - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                        
                         # Draw Pose Keypoints if person
                         if det["keypoints"]:
                             for kp in det["keypoints"]:
@@ -412,8 +462,10 @@ def analyze_video(video_path, query, conf_threshold=0.25, frame_skip=5, progress
             '-y', 
             '-i', temp_output_path, 
             '-vcodec', 'libx264', 
-            '-preset', 'ultrafast', # SCARY FAST ENCODING
-            '-crf', '28', # Balanced quality/size for preview
+            '-preset', 'ultrafast', 
+            '-pix_fmt', 'yuv420p',   # MAX COMPATIBILITY (Fixes blank screen)
+            '-movflags', '+faststart', # ALLOWS INSTANT WEB PLAYBACK
+            '-crf', '28', 
         ]
         
         # Apply aspect ratio if detected

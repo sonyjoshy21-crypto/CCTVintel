@@ -1,4 +1,3 @@
-from gpt4all import GPT4All
 import json
 import re
 
@@ -12,6 +11,7 @@ def get_llm_model():
         print("Initializing LLM for prompt parsing...")
         _model_load_attempted = True
         try:
+            from gpt4all import GPT4All
             # We use a 3 Billion parameter model for faster CPU inference
             _model = GPT4All("orca-mini-3b-gguf2-q4_0.gguf") 
             print("LLM loaded successfully.")

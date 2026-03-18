@@ -1,5 +1,5 @@
-import torch
 from PIL import Image
+import torch
 from transformers import CLIPProcessor, CLIPModel
 
 # Lazy load model variables
@@ -11,6 +11,7 @@ def get_clip_model():
     global _clip_model, _clip_processor, _model_load_attempted
     if _clip_model is None and not _model_load_attempted:
         print("Loading CLIP model for zero-shot attribute classification...")
+        _model_load_attempted = True
         _model_load_attempted = True
         try:
             # Load the standard OpenAI CLIP model

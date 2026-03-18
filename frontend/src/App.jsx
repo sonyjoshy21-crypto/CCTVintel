@@ -122,9 +122,26 @@ function App() {
       saveReportToDatabase(analysisData)
     } catch (err) {
       console.error(err)
-      setError(err.response?.data?.error || 'Failed to analyze video.')
+      const errorMsg = err.response?.data?.error || 'Failed to analyze video.'
+      const trace = err.response?.data?.traceback ? `\n\nBackend Traceback:\n${err.response.data.traceback}` : ''
+      setError(errorMsg + trace)
       setAnalyzing(false)
       setProgress({ percent: 0, message: '' })
+    }
+  }
+
+  const handleCancel = async () => {
+    if (!uploadedFilename) return;
+    
+    try {
+      await axios.post(`http://localhost:5000/api/cancel/${uploadedFilename}`);
+      setAnalyzing(false);
+      setProgress({ percent: 0, message: '' });
+      setError('Analysis cancelled by user.');
+    } catch (err) {
+      console.error("Cancellation error", err);
+      // Even if API fails, stop UI state to be safe
+      setAnalyzing(false);
     }
   }
 
@@ -160,11 +177,15 @@ function App() {
         ])
       if (error) {
         console.error("Error saving report to Supabase:", error);
+        setError("Database Save Failure: " + (error.message || JSON.stringify(error)));
       } else {
         console.log("Report saved to database successfully.");
+        // Refresh history to include the new report
+        fetchHistory();
       }
     } catch (err) {
       console.error("Database save exception:", err);
+      setError("Database Exception: " + err.message);
     }
   }
 
@@ -185,8 +206,10 @@ function App() {
       
       if (error) throw error
       setHistory(data || [])
+      setError(null) // Clear any previous error if fetch succeeds
     } catch (err) {
       console.error("Error fetching history:", err)
+      setError(err.message || String(err))
     } finally {
       setLoadingHistory(false)
     }
@@ -371,8 +394,23 @@ function App() {
               </button>
               
               {analyzing && (
-                <div style={{ marginTop: '1rem', textAlign: 'center', fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                  {progress.message}
+                <div style={{ marginTop: '1.5rem', textAlign: 'center' }}>
+                  <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+                    {progress.message}
+                  </div>
+                  <button 
+                    className="btn-primary" 
+                    onClick={handleCancel}
+                    style={{ 
+                      background: 'rgba(239, 68, 68, 0.1)', 
+                      border: '1px solid rgba(239, 68, 68, 0.3)',
+                      color: '#f87171',
+                      padding: '0.6rem 1.2rem',
+                      fontSize: '0.85rem'
+                    }}
+                  >
+                    <Activity size={16} /> Cancel Analysis
+                  </button>
                 </div>
               )}
             </div>
@@ -398,10 +436,27 @@ function App() {
                 </button>
                 <h1 style={{ fontSize: '2rem', fontWeight: 500, marginBottom: '0.25rem' }}>Past Reports</h1>
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                  Your previously analyzed CCTV footage and detections
+                  Your previously analyzed CCTV footage and detections (Shared Guest Account)
                 </p>
               </div>
+              <button 
+                className="btn-primary" 
+                onClick={fetchHistory} 
+                style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}
+                disabled={loadingHistory}
+              >
+                {loadingHistory ? 'Refreshing...' : 'Refresh History'}
+              </button>
             </div>
+
+            {/* Debug Banner for Troubleshooting */}
+            {(!history.length || error) && (
+              <div style={{ padding: '0.75rem 1rem', background: 'rgba(255,255,255,0.05)', borderRadius: '8px', marginBottom: '1.5rem', fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', gap: '1.5rem' }}>
+                <span><strong>Status:</strong> {loadingHistory ? 'Updating...' : 'Connected'}</span>
+                <span><strong>Guest ID:</strong> {GUEST_USER_ID}</span>
+                <span><strong>Supabase:</strong> {supabase.supabaseUrl ? 'Ready' : 'Not Connected'}</span>
+              </div>
+            )}
 
             <div className="glass-panel" style={{ minHeight: '400px' }}>
               {loadingHistory ? (
@@ -448,6 +503,14 @@ function App() {
                   <p style={{ color: 'var(--text-muted)', maxWidth: '400px' }}>
                     It looks like you haven't run any analyses yet. Head over to the dashboard to upload your first video.
                   </p>
+                  
+                  {/* Technical details to help debug */}
+                  <div style={{ marginTop: '2rem', padding: '1rem', background: 'rgba(0,0,0,0.2)', borderRadius: '8px', width: '100%', maxWidth: '400px', textAlign: 'left', fontSize: '0.75rem', fontFamily: 'monospace' }}>
+                    <div style={{ color: '#aaa', marginBottom: '0.5rem', fontWeight: 'bold' }}>Technical Debug Info:</div>
+                    <div>Database: {supabase.supabaseUrl.split('//')[1].split('.')[0]}</div>
+                    <div style={{ color: error ? '#f87171' : '#4ade80' }}>Last Error: {error ? (typeof error === 'string' ? error : JSON.stringify(error)) : 'None'}</div>
+                  </div>
+
                   <button className="btn-primary" onClick={() => setView('home')} style={{ marginTop: '1.5rem' }}>
                     Go to Dashboard
                   </button>
